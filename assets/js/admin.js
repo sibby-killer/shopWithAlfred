@@ -87,6 +87,58 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 
     // Jumia extraction (client-side via CORS proxy - works on InfinityFree)
+    // Helper: parse Jumia HTML and fill form fields
+    function parseJumiaHTML(html) {
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(html, 'text/html');
+        let found = false;
+
+        // Extract product name from h1
+        const h1 = doc.querySelector('h1');
+        if (h1) {
+            document.getElementById('productName').value = h1.textContent.trim();
+            found = true;
+        }
+
+        // Extract price (KSh format)
+        const priceMatch = html.match(/KSh\s*([\d,]+(?:\.\d{2})?)/i);
+        if (priceMatch) {
+            document.getElementById('productPrice').value = priceMatch[1].replace(/,/g, '');
+            found = true;
+        }
+
+        // Extract description
+        const descEl = doc.querySelector('[class*="markup"]') || doc.querySelector('[class*="description"]');
+        if (descEl) {
+            document.getElementById('productDesc').value = descEl.textContent.trim().substring(0, 500);
+            found = true;
+        }
+
+        // Extract images
+        const images = [];
+        doc.querySelectorAll('[data-zoom-image]').forEach(el => {
+            const src = el.getAttribute('data-zoom-image');
+            if (src && !images.includes(src)) images.push(src);
+        });
+        if (images.length === 0) {
+            doc.querySelectorAll('img[src*="jumia"]').forEach(el => {
+                const src = el.getAttribute('src');
+                if (src && (src.includes('.jpg') || src.includes('.png') || src.includes('.webp')) && !images.includes(src) && src.includes('http')) images.push(src);
+            });
+        }
+        if (images.length === 0) {
+            // Try og:image meta tag
+            const ogImg = doc.querySelector('meta[property="og:image"]');
+            if (ogImg && ogImg.content) images.push(ogImg.content);
+        }
+        if (images.length > 0) {
+            document.getElementById('productImages').value = images.slice(0, 5).join('\n');
+            found = true;
+        }
+
+        return found;
+    }
+
     if (extractBtn) {
         extractBtn.addEventListener('click', async () => {
             const url = document.getElementById('jumiaLink').value.trim();
@@ -98,80 +150,87 @@ document.addEventListener('DOMContentLoaded', function () {
             extractBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting...';
 
             try {
-                // Use free CORS proxies to fetch the page client-side
+                // Try multiple free CORS proxies
                 let html = null;
+                const cleanUrl = url.split('?')[0]; // Remove tracking params
                 const proxies = [
-                    'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
-                    'https://corsproxy.io/?' + encodeURIComponent(url)
+                    'https://api.allorigins.win/raw?url=' + encodeURIComponent(cleanUrl),
+                    'https://corsproxy.io/?' + encodeURIComponent(cleanUrl),
+                    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(cleanUrl),
+                    'https://thingproxy.freeboard.io/fetch/' + cleanUrl
                 ];
 
                 for (const proxyUrl of proxies) {
                     try {
-                        const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
-                        if (res.ok) { html = await res.text(); break; }
+                        const controller = new AbortController();
+                        const timeout = setTimeout(() => controller.abort(), 10000);
+                        const res = await fetch(proxyUrl, { signal: controller.signal });
+                        clearTimeout(timeout);
+                        if (res.ok) {
+                            const text = await res.text();
+                            if (text.length > 1000 && (text.includes('jumia') || text.includes('KSh'))) {
+                                html = text;
+                                break;
+                            }
+                        }
                     } catch (e) { continue; }
                 }
 
-                if (!html) {
-                    showToast('Could not fetch page. Try copying details manually.', 'error');
-                    return;
-                }
-
-                // Parse the HTML in the browser
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(html, 'text/html');
-                let found = false;
-
-                // Extract product name
-                const h1 = doc.querySelector('h1');
-                if (h1) {
-                    document.getElementById('productName').value = h1.textContent.trim();
-                    found = true;
-                }
-
-                // Extract price (KSh format)
-                const priceMatch = html.match(/KSh\s*([\d,]+(?:\.\d{2})?)/i);
-                if (priceMatch) {
-                    document.getElementById('productPrice').value = priceMatch[1].replace(/,/g, '');
-                    found = true;
-                }
-
-                // Extract description
-                const descEl = doc.querySelector('[class*="markup"]') || doc.querySelector('[class*="description"]');
-                if (descEl) {
-                    document.getElementById('productDesc').value = descEl.textContent.trim().substring(0, 500);
-                    found = true;
-                }
-
-                // Extract images
-                const images = [];
-                doc.querySelectorAll('[data-zoom-image]').forEach(el => {
-                    const src = el.getAttribute('data-zoom-image');
-                    if (src && !images.includes(src)) images.push(src);
-                });
-                if (images.length === 0) {
-                    doc.querySelectorAll('img[src*="jumia"]').forEach(el => {
-                        const src = el.getAttribute('src');
-                        if (src && src.includes('.jpg') && !images.includes(src)) images.push(src);
-                    });
-                }
-                if (images.length > 0) {
-                    document.getElementById('productImages').value = images.slice(0, 5).join('\n');
-                    found = true;
-                }
-
-                if (found) {
-                    showToast('Product details extracted!', 'success');
+                if (html) {
+                    const found = parseJumiaHTML(html);
+                    if (found) {
+                        showToast('Product details extracted!', 'success');
+                    } else {
+                        showToast('Page loaded but could not find details. Try the paste method below.', 'warning');
+                        showPasteHelper();
+                    }
                 } else {
-                    showToast('Page loaded but could not find product details. Try manually.', 'warning');
+                    showToast('All proxies failed. Use the paste method below to extract manually.', 'warning');
+                    showPasteHelper();
                 }
 
             } catch (e) {
-                showToast('Extraction failed. Enter details manually.', 'error');
+                showToast('Extraction failed. Use the paste method below.', 'error');
+                showPasteHelper();
             } finally {
                 extractBtn.classList.remove('loading');
                 extractBtn.disabled = false;
                 extractBtn.innerHTML = '<i class="fas fa-download"></i> Extract';
+            }
+        });
+    }
+
+    // Paste helper: lets user paste the page source HTML manually
+    function showPasteHelper() {
+        let helper = document.getElementById('pasteHelper');
+        if (helper) { helper.style.display = 'block'; return; }
+
+        const jumiaGroup = document.getElementById('jumiaLink')?.closest('.form-group');
+        if (!jumiaGroup) return;
+
+        helper = document.createElement('div');
+        helper.id = 'pasteHelper';
+        helper.style.cssText = 'margin-top:12px;padding:12px;background:var(--bg-secondary);border-radius:8px;border:1px dashed var(--accent)';
+        helper.innerHTML = `
+            <p style="font-size:13px;margin-bottom:8px;color:var(--text-secondary)">
+                <strong>Manual extract:</strong> Open the Jumia product page → press <kbd style="background:var(--bg-primary);padding:2px 6px;border-radius:3px">Ctrl+U</kbd> → 
+                Select All (<kbd style="background:var(--bg-primary);padding:2px 6px;border-radius:3px">Ctrl+A</kbd>) → Copy → Paste below:
+            </p>
+            <textarea id="pasteHTML" rows="3" placeholder="Paste the page source code here..." style="width:100%;font-size:12px"></textarea>
+            <button type="button" class="btn btn-secondary btn-sm" id="parsePastedHTML" style="margin-top:8px">
+                <i class="fas fa-magic"></i> Extract from Paste
+            </button>`;
+        jumiaGroup.appendChild(helper);
+
+        document.getElementById('parsePastedHTML').addEventListener('click', () => {
+            const pasted = document.getElementById('pasteHTML').value;
+            if (!pasted || pasted.length < 100) { showToast('Please paste the page source code', 'error'); return; }
+            const found = parseJumiaHTML(pasted);
+            if (found) {
+                showToast('Product details extracted from paste!', 'success');
+                helper.style.display = 'none';
+            } else {
+                showToast('Could not extract details from pasted HTML.', 'error');
             }
         });
     }
