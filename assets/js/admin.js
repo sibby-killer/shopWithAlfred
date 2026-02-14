@@ -86,151 +86,97 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Jumia extraction (client-side via CORS proxy - works on InfinityFree)
-    // Helper: parse Jumia HTML and fill form fields
-    function parseJumiaHTML(html) {
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(html, 'text/html');
-        let found = false;
-
-        // Extract product name from h1
-        const h1 = doc.querySelector('h1');
-        if (h1) {
-            document.getElementById('productName').value = h1.textContent.trim();
-            found = true;
-        }
-
-        // Extract price (KSh format)
-        const priceMatch = html.match(/KSh\s*([\d,]+(?:\.\d{2})?)/i);
-        if (priceMatch) {
-            document.getElementById('productPrice').value = priceMatch[1].replace(/,/g, '');
-            found = true;
-        }
-
-        // Extract description
-        const descEl = doc.querySelector('[class*="markup"]') || doc.querySelector('[class*="description"]');
-        if (descEl) {
-            document.getElementById('productDesc').value = descEl.textContent.trim().substring(0, 500);
-            found = true;
-        }
-
-        // Extract images
-        const images = [];
-        doc.querySelectorAll('[data-zoom-image]').forEach(el => {
-            const src = el.getAttribute('data-zoom-image');
-            if (src && !images.includes(src)) images.push(src);
-        });
-        if (images.length === 0) {
-            doc.querySelectorAll('img[src*="jumia"]').forEach(el => {
-                const src = el.getAttribute('src');
-                if (src && (src.includes('.jpg') || src.includes('.png') || src.includes('.webp')) && !images.includes(src) && src.includes('http')) images.push(src);
-            });
-        }
-        if (images.length === 0) {
-            // Try og:image meta tag
-            const ogImg = doc.querySelector('meta[property="og:image"]');
-            if (ogImg && ogImg.content) images.push(ogImg.content);
-        }
-        if (images.length > 0) {
-            document.getElementById('productImages').value = images.slice(0, 5).join('\n');
-            found = true;
-        }
-
-        return found;
+    // Jumia extraction — uses bookmarklet approach (CORS proxies don't work due to Cloudflare)
+    // Helper: parse extracted Jumia data and fill form fields
+    function fillFromJumiaData(data) {
+        if (data.name) document.getElementById('productName').value = data.name;
+        if (data.price) document.getElementById('productPrice').value = data.price;
+        if (data.description) document.getElementById('productDesc').value = data.description;
+        if (data.images && data.images.length) document.getElementById('productImages').value = data.images.join('\n');
+        return !!(data.name || data.price);
     }
 
     if (extractBtn) {
-        extractBtn.addEventListener('click', async () => {
+        // Change button to show instructions
+        extractBtn.addEventListener('click', () => {
             const url = document.getElementById('jumiaLink').value.trim();
-            if (!url) { showToast('Please enter a Jumia link', 'error'); return; }
-            if (!url.includes('jumia.co.ke')) { showToast('Please enter a Jumia Kenya URL', 'error'); return; }
-
-            extractBtn.classList.add('loading');
-            extractBtn.disabled = true;
-            extractBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting...';
-
-            try {
-                // Try multiple free CORS proxies
-                let html = null;
-                const cleanUrl = url.split('?')[0]; // Remove tracking params
-                const proxies = [
-                    'https://api.allorigins.win/raw?url=' + encodeURIComponent(cleanUrl),
-                    'https://corsproxy.io/?' + encodeURIComponent(cleanUrl),
-                    'https://api.codetabs.com/v1/proxy?quest=' + encodeURIComponent(cleanUrl),
-                    'https://thingproxy.freeboard.io/fetch/' + cleanUrl
-                ];
-
-                for (const proxyUrl of proxies) {
-                    try {
-                        const controller = new AbortController();
-                        const timeout = setTimeout(() => controller.abort(), 10000);
-                        const res = await fetch(proxyUrl, { signal: controller.signal });
-                        clearTimeout(timeout);
-                        if (res.ok) {
-                            const text = await res.text();
-                            if (text.length > 1000 && (text.includes('jumia') || text.includes('KSh'))) {
-                                html = text;
-                                break;
-                            }
-                        }
-                    } catch (e) { continue; }
-                }
-
-                if (html) {
-                    const found = parseJumiaHTML(html);
-                    if (found) {
-                        showToast('Product details extracted!', 'success');
-                    } else {
-                        showToast('Page loaded but could not find details. Try the paste method below.', 'warning');
-                        showPasteHelper();
-                    }
-                } else {
-                    showToast('All proxies failed. Use the paste method below to extract manually.', 'warning');
-                    showPasteHelper();
-                }
-
-            } catch (e) {
-                showToast('Extraction failed. Use the paste method below.', 'error');
-                showPasteHelper();
-            } finally {
-                extractBtn.classList.remove('loading');
-                extractBtn.disabled = false;
-                extractBtn.innerHTML = '<i class="fas fa-download"></i> Extract';
-            }
+            showExtractHelper(url);
         });
     }
 
-    // Paste helper: lets user paste the page source HTML manually
-    function showPasteHelper() {
-        let helper = document.getElementById('pasteHelper');
+    function showExtractHelper(url) {
+        let helper = document.getElementById('extractHelper');
         if (helper) { helper.style.display = 'block'; return; }
 
         const jumiaGroup = document.getElementById('jumiaLink')?.closest('.form-group');
         if (!jumiaGroup) return;
 
         helper = document.createElement('div');
-        helper.id = 'pasteHelper';
-        helper.style.cssText = 'margin-top:12px;padding:12px;background:var(--bg-secondary);border-radius:8px;border:1px dashed var(--accent)';
+        helper.id = 'extractHelper';
+        helper.style.cssText = 'margin-top:12px;padding:16px;background:var(--bg-secondary);border-radius:8px;border:1px solid var(--border)';
+
+        // Bookmarklet code - extracts product data from Jumia page
+        const bookmarkletCode = `javascript:void(function(){try{var d={};var h=document.querySelector('h1');if(h)d.name=h.textContent.trim();var p=document.body.innerHTML.match(/KSh\\s*([\\d,]+)/i);if(p)d.price=p[1].replace(/,/g,'');var desc=document.querySelector('[class*=markup]');if(desc)d.description=desc.textContent.trim().substring(0,500);d.images=[];document.querySelectorAll('[data-zoom-image]').forEach(function(e){var s=e.getAttribute('data-zoom-image');if(s&&d.images.indexOf(s)<0)d.images.push(s)});if(!d.images.length){document.querySelectorAll('img').forEach(function(e){var s=e.src;if(s&&s.indexOf('jumia')>-1&&(s.indexOf('.jpg')>-1||s.indexOf('.png')>-1)&&d.images.indexOf(s)<0&&d.images.length<5)d.images.push(s)})}var t='JUMIA_DATA:'+JSON.stringify(d);navigator.clipboard.writeText(t).then(function(){alert('Product data copied! Go to ShopWithAlfred admin and paste it.')}).catch(function(){prompt('Copy this text:',t)})}catch(e){alert('Error: '+e.message)}})()`;
+
         helper.innerHTML = `
-            <p style="font-size:13px;margin-bottom:8px;color:var(--text-secondary)">
-                <strong>Manual extract:</strong> Open the Jumia product page → press <kbd style="background:var(--bg-primary);padding:2px 6px;border-radius:3px">Ctrl+U</kbd> → 
-                Select All (<kbd style="background:var(--bg-primary);padding:2px 6px;border-radius:3px">Ctrl+A</kbd>) → Copy → Paste below:
+            <p style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--text-primary)">
+                <i class="fas fa-magic" style="color:var(--accent)"></i> How to Extract from Jumia:
             </p>
-            <textarea id="pasteHTML" rows="3" placeholder="Paste the page source code here..." style="width:100%;font-size:12px"></textarea>
-            <button type="button" class="btn btn-secondary btn-sm" id="parsePastedHTML" style="margin-top:8px">
-                <i class="fas fa-magic"></i> Extract from Paste
-            </button>`;
+            <div style="background:var(--bg-primary);padding:12px;border-radius:6px;margin-bottom:12px">
+                <p style="font-size:13px;margin-bottom:8px"><strong>Option 1: Bookmarklet</strong> (one-time setup)</p>
+                <ol style="font-size:12px;padding-left:20px;color:var(--text-secondary);line-height:1.8">
+                    <li>Drag this button to your <strong>Bookmarks Bar</strong>: 
+                        <a href="${bookmarkletCode}" onclick="event.preventDefault();showToast('Drag this to your bookmarks bar!','warning')" 
+                           style="display:inline-block;padding:4px 12px;background:var(--accent);color:white;border-radius:4px;text-decoration:none;font-weight:600;font-size:11px;cursor:grab">
+                           📦 Grab Jumia Product</a></li>
+                    <li>Go to any <strong>Jumia product page</strong></li>
+                    <li>Click the <strong>"Grab Jumia Product"</strong> bookmark</li>
+                    <li>Come back here and <strong>paste</strong> in the box below</li>
+                </ol>
+            </div>
+            <div style="background:var(--bg-primary);padding:12px;border-radius:6px;margin-bottom:12px">
+                <p style="font-size:13px;margin-bottom:8px"><strong>Option 2: Quick Copy-Paste</strong></p>
+                <ol style="font-size:12px;padding-left:20px;color:var(--text-secondary);line-height:1.8">
+                    <li>Open the Jumia product page</li>
+                    <li>Open browser console: <kbd style="background:var(--bg-secondary);padding:2px 6px;border-radius:3px;font-size:11px">F12</kbd> → Console tab</li>
+                    <li>Paste this code and press Enter:</li>
+                </ol>
+                <div style="position:relative;margin-top:8px">
+                    <pre id="consoleCode" style="background:#1a1a2e;color:#0f0;padding:10px;border-radius:4px;font-size:11px;overflow-x:auto;white-space:pre-wrap;cursor:pointer"
+                         onclick="navigator.clipboard.writeText(this.textContent);showToast('Code copied!','success')"
+                    >var d={};var h=document.querySelector('h1');if(h)d.name=h.textContent.trim();var p=document.body.innerHTML.match(/KSh\\s*([\\d,]+)/i);if(p)d.price=p[1].replace(/,/g,'');d.images=[];document.querySelectorAll('[data-zoom-image]').forEach(function(e){var s=e.getAttribute('data-zoom-image');if(s)d.images.push(s)});copy('JUMIA_DATA:'+JSON.stringify(d));console.log('Copied!',d);</pre>
+                    <small style="color:var(--text-secondary)">(Click the code to copy it)</small>
+                </div>
+            </div>
+            <div style="margin-top:12px">
+                <label style="font-size:13px;font-weight:500;display:block;margin-bottom:4px">Paste extracted data here:</label>
+                <textarea id="pasteJumiaData" rows="2" placeholder="Paste here after using the bookmarklet or console code..." style="width:100%;font-size:12px"></textarea>
+                <button type="button" class="btn btn-primary btn-sm" id="parseJumiaData" style="margin-top:8px">
+                    <i class="fas fa-check"></i> Fill Product Details
+                </button>
+            </div>`;
         jumiaGroup.appendChild(helper);
 
-        document.getElementById('parsePastedHTML').addEventListener('click', () => {
-            const pasted = document.getElementById('pasteHTML').value;
-            if (!pasted || pasted.length < 100) { showToast('Please paste the page source code', 'error'); return; }
-            const found = parseJumiaHTML(pasted);
-            if (found) {
-                showToast('Product details extracted from paste!', 'success');
-                helper.style.display = 'none';
-            } else {
-                showToast('Could not extract details from pasted HTML.', 'error');
+        // Parse pasted data
+        document.getElementById('parseJumiaData').addEventListener('click', () => {
+            const raw = document.getElementById('pasteJumiaData').value.trim();
+            if (!raw) { showToast('Please paste the extracted data first', 'error'); return; }
+
+            try {
+                let jsonStr = raw;
+                // Handle JUMIA_DATA: prefix
+                if (raw.startsWith('JUMIA_DATA:')) {
+                    jsonStr = raw.substring('JUMIA_DATA:'.length);
+                }
+                const data = JSON.parse(jsonStr);
+                if (fillFromJumiaData(data)) {
+                    showToast('Product details filled!', 'success');
+                    helper.style.display = 'none';
+                } else {
+                    showToast('No product details found in pasted data.', 'error');
+                }
+            } catch (e) {
+                showToast('Invalid data format. Make sure you copied correctly.', 'error');
             }
         });
     }
