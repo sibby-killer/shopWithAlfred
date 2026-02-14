@@ -86,27 +86,93 @@ document.addEventListener('DOMContentLoaded', function () {
         });
     }
 
-    // Jumia extraction
+    // Jumia extraction (client-side via CORS proxy - works on InfinityFree)
     if (extractBtn) {
         extractBtn.addEventListener('click', async () => {
-            const url = document.getElementById('jumiaLink').value;
+            const url = document.getElementById('jumiaLink').value.trim();
             if (!url) { showToast('Please enter a Jumia link', 'error'); return; }
+            if (!url.includes('jumia.co.ke')) { showToast('Please enter a Jumia Kenya URL', 'error'); return; }
+
             extractBtn.classList.add('loading');
             extractBtn.disabled = true;
+            extractBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Extracting...';
+
             try {
-                const data = await api('extract-jumia.php?url=' + encodeURIComponent(url));
-                if (data.success) {
-                    if (data.name) document.getElementById('productName').value = data.name;
-                    if (data.price) document.getElementById('productPrice').value = data.price;
-                    if (data.description) document.getElementById('productDesc').value = data.description;
-                    if (data.images) document.getElementById('productImages').value = data.images.join('\n');
+                // Use free CORS proxies to fetch the page client-side
+                let html = null;
+                const proxies = [
+                    'https://api.allorigins.win/raw?url=' + encodeURIComponent(url),
+                    'https://corsproxy.io/?' + encodeURIComponent(url)
+                ];
+
+                for (const proxyUrl of proxies) {
+                    try {
+                        const res = await fetch(proxyUrl, { signal: AbortSignal.timeout(12000) });
+                        if (res.ok) { html = await res.text(); break; }
+                    } catch (e) { continue; }
+                }
+
+                if (!html) {
+                    showToast('Could not fetch page. Try copying details manually.', 'error');
+                    return;
+                }
+
+                // Parse the HTML in the browser
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(html, 'text/html');
+                let found = false;
+
+                // Extract product name
+                const h1 = doc.querySelector('h1');
+                if (h1) {
+                    document.getElementById('productName').value = h1.textContent.trim();
+                    found = true;
+                }
+
+                // Extract price (KSh format)
+                const priceMatch = html.match(/KSh\s*([\d,]+(?:\.\d{2})?)/i);
+                if (priceMatch) {
+                    document.getElementById('productPrice').value = priceMatch[1].replace(/,/g, '');
+                    found = true;
+                }
+
+                // Extract description
+                const descEl = doc.querySelector('[class*="markup"]') || doc.querySelector('[class*="description"]');
+                if (descEl) {
+                    document.getElementById('productDesc').value = descEl.textContent.trim().substring(0, 500);
+                    found = true;
+                }
+
+                // Extract images
+                const images = [];
+                doc.querySelectorAll('[data-zoom-image]').forEach(el => {
+                    const src = el.getAttribute('data-zoom-image');
+                    if (src && !images.includes(src)) images.push(src);
+                });
+                if (images.length === 0) {
+                    doc.querySelectorAll('img[src*="jumia"]').forEach(el => {
+                        const src = el.getAttribute('src');
+                        if (src && src.includes('.jpg') && !images.includes(src)) images.push(src);
+                    });
+                }
+                if (images.length > 0) {
+                    document.getElementById('productImages').value = images.slice(0, 5).join('\n');
+                    found = true;
+                }
+
+                if (found) {
                     showToast('Product details extracted!', 'success');
                 } else {
-                    showToast(data.message || 'Could not extract. Enter details manually.', 'warning');
+                    showToast('Page loaded but could not find product details. Try manually.', 'warning');
                 }
-            } catch (e) { showToast('Extraction failed. Enter details manually.', 'error'); }
-            extractBtn.classList.remove('loading');
-            extractBtn.disabled = false;
+
+            } catch (e) {
+                showToast('Extraction failed. Enter details manually.', 'error');
+            } finally {
+                extractBtn.classList.remove('loading');
+                extractBtn.disabled = false;
+                extractBtn.innerHTML = '<i class="fas fa-download"></i> Extract';
+            }
         });
     }
 
